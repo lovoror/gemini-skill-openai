@@ -302,13 +302,8 @@ export async function handleChatCompletions(req, res) {
   }
 
   const { messages, model, stream } = body;
-  const requestedModel = model || 'gemini-2.5-pro';
 
-  if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    sendError(res, 400, 'messages is required and must be a non-empty array');
-    return;
-  }
-
+  // model 校验优先（可以不传，不传时使用默认值）
   if (model && IMAGE_MODEL_SET.has(model)) {
     sendError(res, 400, 'Image generation models are only supported on /v1/images/generations');
     return;
@@ -316,6 +311,13 @@ export async function handleChatCompletions(req, res) {
 
   if (model && !CHAT_MODEL_MAP[model]) {
     sendError(res, 400, `Unsupported chat model: ${model}`);
+    return;
+  }
+
+  const requestedModel = model || 'gemini-2.5-pro';
+
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    sendError(res, 400, 'messages is required and must be a non-empty array');
     return;
   }
 
@@ -555,6 +557,9 @@ export async function handleImageGenerations(req, res) {
 }
 
 async function generateImageHandler(prompt, responseFormat, req, modelName) {
+  // 注意：modelName 的 2k / 4k / aspect-ratio 后缀当前仅作声明用途，
+  // 底层 ops.generateImage() 尚未支持分辨率/比例参数化，所有图片模型统一走 ensureModelPro()。
+  // 后续如需区分，可在此处解析 modelName 并向 ops.generateImage() 传入对应参数。
   const { ops } = await createGeminiSession();
 
   try {
