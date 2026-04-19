@@ -15,50 +15,15 @@ import { sleep } from '../util.js';
 import { enqueue } from './queue.js';
 import { writeSSEHeaders, writeSSEChunk, writeSSEDone } from './stream.js';
 
-// ── 模型映射（browser 内部只有 pro / quick / think 三档） ──
-// 图片生成模型（gemini-*-image*）一律映射 pro，客户端应使用 /v1/images/generations
+// ── 模型目录 ──
+// browser 内部只有 pro / quick / think 三档；图片生成仍复用 MCP 的 ensureModelPro() 流程。
+// 因此 chat 与 images 必须分开校验，不能把 image-only model 当成聊天模型来切换。
 
-const MODEL_MAP = {
+const CHAT_MODEL_MAP = {
   // ── Gemini 3.1 ──
   'gemini-3.1-pro':         'pro',
   'gemini-3.1-pro-preview': 'pro',
   'gemini-3.1-flash':       'quick',
-
-  // ── Gemini 3.1 图片生成（标准分辨率） ──
-  'gemini-3.1-flash-image':       'pro',
-  'gemini-3.1-flash-image-3x2':   'pro',
-  'gemini-3.1-flash-image-2x3':   'pro',
-  'gemini-3.1-flash-image-3x4':   'pro',
-  'gemini-3.1-flash-image-4x3':   'pro',
-  'gemini-3.1-flash-image-4x5':   'pro',
-  'gemini-3.1-flash-image-5x4':   'pro',
-  'gemini-3.1-flash-image-9x16':  'pro',
-  'gemini-3.1-flash-image-16x9':  'pro',
-  'gemini-3.1-flash-image-21x9':  'pro',
-
-  // ── Gemini 3.1 图片生成（2k） ──
-  'gemini-3.1-flash-image-2k':       'pro',
-  'gemini-3.1-flash-image-2k-3x2':   'pro',
-  'gemini-3.1-flash-image-2k-2x3':   'pro',
-  'gemini-3.1-flash-image-2k-3x4':   'pro',
-  'gemini-3.1-flash-image-2k-4x3':   'pro',
-  'gemini-3.1-flash-image-2k-4x5':   'pro',
-  'gemini-3.1-flash-image-2k-5x4':   'pro',
-  'gemini-3.1-flash-image-2k-9x16':  'pro',
-  'gemini-3.1-flash-image-2k-16x9':  'pro',
-  'gemini-3.1-flash-image-2k-21x9':  'pro',
-
-  // ── Gemini 3.1 图片生成（4k） ──
-  'gemini-3.1-flash-image-4k':       'pro',
-  'gemini-3.1-flash-image-4k-3x2':   'pro',
-  'gemini-3.1-flash-image-4k-2x3':   'pro',
-  'gemini-3.1-flash-image-4k-3x4':   'pro',
-  'gemini-3.1-flash-image-4k-4x3':   'pro',
-  'gemini-3.1-flash-image-4k-4x5':   'pro',
-  'gemini-3.1-flash-image-4k-5x4':   'pro',
-  'gemini-3.1-flash-image-4k-9x16':  'pro',
-  'gemini-3.1-flash-image-4k-16x9':  'pro',
-  'gemini-3.1-flash-image-4k-21x9':  'pro',
 
   // ── Gemini 3 ──
   'gemini-3-pro':         'pro',
@@ -78,6 +43,41 @@ const MODEL_MAP = {
   'gemini-flash':   'quick',
   'gemini-thinking': 'think',
 };
+
+const IMAGE_MODEL_IDS = [
+  'gemini-3.1-flash-image',
+  'gemini-3.1-flash-image-3x2',
+  'gemini-3.1-flash-image-2x3',
+  'gemini-3.1-flash-image-3x4',
+  'gemini-3.1-flash-image-4x3',
+  'gemini-3.1-flash-image-4x5',
+  'gemini-3.1-flash-image-5x4',
+  'gemini-3.1-flash-image-9x16',
+  'gemini-3.1-flash-image-16x9',
+  'gemini-3.1-flash-image-21x9',
+  'gemini-3.1-flash-image-2k',
+  'gemini-3.1-flash-image-2k-3x2',
+  'gemini-3.1-flash-image-2k-2x3',
+  'gemini-3.1-flash-image-2k-3x4',
+  'gemini-3.1-flash-image-2k-4x3',
+  'gemini-3.1-flash-image-2k-4x5',
+  'gemini-3.1-flash-image-2k-5x4',
+  'gemini-3.1-flash-image-2k-9x16',
+  'gemini-3.1-flash-image-2k-16x9',
+  'gemini-3.1-flash-image-2k-21x9',
+  'gemini-3.1-flash-image-4k',
+  'gemini-3.1-flash-image-4k-3x2',
+  'gemini-3.1-flash-image-4k-2x3',
+  'gemini-3.1-flash-image-4k-3x4',
+  'gemini-3.1-flash-image-4k-4x3',
+  'gemini-3.1-flash-image-4k-4x5',
+  'gemini-3.1-flash-image-4k-5x4',
+  'gemini-3.1-flash-image-4k-9x16',
+  'gemini-3.1-flash-image-4k-16x9',
+  'gemini-3.1-flash-image-4k-21x9',
+];
+
+const IMAGE_MODEL_SET = new Set(IMAGE_MODEL_IDS);
 
 // Unix 时间戳（近似发布日期）
 const T_31 = 1745000000; // Gemini 3.1 系列 ≈ 2026-04
@@ -259,7 +259,7 @@ function extractPrompt(messages) {
  * 根据请求的 model 名称切换 Gemini 模型
  */
 async function switchModelIfNeeded(ops, modelName) {
-  const internalModel = MODEL_MAP[modelName];
+  const internalModel = CHAT_MODEL_MAP[modelName];
   if (!internalModel) return; // 未知 model 不切换
 
   try {
@@ -302,9 +302,20 @@ export async function handleChatCompletions(req, res) {
   }
 
   const { messages, model, stream } = body;
+  const requestedModel = model || 'gemini-2.5-pro';
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     sendError(res, 400, 'messages is required and must be a non-empty array');
+    return;
+  }
+
+  if (model && IMAGE_MODEL_SET.has(model)) {
+    sendError(res, 400, 'Image generation models are only supported on /v1/images/generations');
+    return;
+  }
+
+  if (model && !CHAT_MODEL_MAP[model]) {
+    sendError(res, 400, `Unsupported chat model: ${model}`);
     return;
   }
 
@@ -316,8 +327,8 @@ export async function handleChatCompletions(req, res) {
 
   try {
     await enqueue(() => stream
-      ? streamChatCompletion(res, prompt, images, model || 'gemini-2.5-pro')
-      : nonStreamChatCompletion(res, prompt, images, model || 'gemini-2.5-pro')
+      ? streamChatCompletion(res, prompt, images, requestedModel)
+      : nonStreamChatCompletion(res, prompt, images, requestedModel)
     );
   } catch (err) {
     if (err.status === 429) {
@@ -513,10 +524,15 @@ export async function handleImageGenerations(req, res) {
     return;
   }
 
-  const { prompt, response_format = 'b64_json', n = 1 } = body;
+  const { prompt, response_format = 'b64_json', n = 1, model = 'gemini-3.1-flash-image' } = body;
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     sendError(res, 400, 'prompt is required and must be a non-empty string');
+    return;
+  }
+
+  if (typeof model !== 'string' || !IMAGE_MODEL_SET.has(model)) {
+    sendError(res, 400, `Unsupported image model: ${model}`);
     return;
   }
 
@@ -527,7 +543,7 @@ export async function handleImageGenerations(req, res) {
   }
 
   try {
-    const result = await enqueue(() => generateImageHandler(prompt, response_format, req));
+    const result = await enqueue(() => generateImageHandler(prompt, response_format, req, model));
     sendJSON(res, 200, result);
   } catch (err) {
     if (err.status === 429) {
@@ -538,7 +554,7 @@ export async function handleImageGenerations(req, res) {
   }
 }
 
-async function generateImageHandler(prompt, responseFormat, req) {
+async function generateImageHandler(prompt, responseFormat, req, modelName) {
   const { ops } = await createGeminiSession();
 
   try {
@@ -576,7 +592,7 @@ async function generateImageHandler(prompt, responseFormat, req) {
       throw new Error('No image data in result');
     }
 
-    return { created, data };
+    return { created, data, model: modelName };
   } finally {
     disconnect();
   }

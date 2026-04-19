@@ -611,6 +611,34 @@ describe('API Server 集成测试', () => {
     assert.ok(json.error.message.includes('Invalid JSON'));
   });
 
+  it('chat/completions: image-only model 返回 400', async () => {
+    const res = await request(port, {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { Authorization: 'Bearer test-key-12345' },
+      body: {
+        model: 'gemini-3.1-flash-image-4k',
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.json.error.message.includes('/v1/images/generations'));
+  });
+
+  it('chat/completions: 未知聊天模型返回 400', async () => {
+    const res = await request(port, {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { Authorization: 'Bearer test-key-12345' },
+      body: {
+        model: 'gemini-unknown-model',
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.json.error.message.includes('Unsupported chat model'));
+  });
+
   // ── POST /v1/images/generations — 请求校验 ──
 
   it('images/generations: 无 prompt 返回 400', async () => {
@@ -643,6 +671,17 @@ describe('API Server 集成测试', () => {
     });
     assert.equal(res.status, 400);
     assert.ok(res.json.error.message.includes('n=1'));
+  });
+
+  it('images/generations: 非图片模型返回 400', async () => {
+    const res = await request(port, {
+      method: 'POST',
+      path: '/v1/images/generations',
+      headers: { Authorization: 'Bearer test-key-12345' },
+      body: { prompt: 'a cat', model: 'gemini-3.1-pro' },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.json.error.message.includes('Unsupported image model'));
   });
 
   // ── 健康检查不需要认证 ──
