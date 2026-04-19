@@ -617,7 +617,7 @@ describe('API Server 集成测试', () => {
       path: '/v1/chat/completions',
       headers: { Authorization: 'Bearer test-key-12345' },
       body: {
-        model: 'gemini-3.1-flash-image-4k',
+        model: 'gemini-3.1-flash-image',
         messages: [{ role: 'user', content: 'hello' }],
       },
     });
