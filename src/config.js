@@ -134,6 +134,14 @@ const config = {
 
   /** Daemon 闲置超时时间（ms），超时后自动终止浏览器释放资源 */
   daemonTTL: envInt('DAEMON_TTL_MS', 30 * 60 * 1000),
+
+  // ── OpenAI 兼容 API 配置 ──
+
+  /** API HTTP 服务端口 */
+  apiPort: envInt('API_PORT', 3000),
+
+  /** API 认证密钥，为空则跳过认证 */
+  apiKey: envStr('API_KEY', ''),
 };
 
 export default config;
