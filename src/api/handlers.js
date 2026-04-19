@@ -15,22 +15,131 @@ import { sleep } from '../util.js';
 import { enqueue } from './queue.js';
 import { writeSSEHeaders, writeSSEChunk, writeSSEDone } from './stream.js';
 
-// ── 模型映射 ──
+// ── 模型映射（browser 内部只有 pro / quick / think 三档） ──
+// 图片生成模型（gemini-*-image*）一律映射 pro，客户端应使用 /v1/images/generations
 
 const MODEL_MAP = {
-  'gemini-3.1-pro': 'pro',
-  'gemini-pro': 'pro',
-  'gemini-3.1-flash': 'quick',
-  'gemini-flash': 'quick',
-  'gemini-2.5-flash-thinking': 'think',
+  // ── Gemini 3.1 ──
+  'gemini-3.1-pro':         'pro',
+  'gemini-3.1-pro-preview': 'pro',
+  'gemini-3.1-flash':       'quick',
+
+  // ── Gemini 3.1 图片生成（标准分辨率） ──
+  'gemini-3.1-flash-image':       'pro',
+  'gemini-3.1-flash-image-3x2':   'pro',
+  'gemini-3.1-flash-image-2x3':   'pro',
+  'gemini-3.1-flash-image-3x4':   'pro',
+  'gemini-3.1-flash-image-4x3':   'pro',
+  'gemini-3.1-flash-image-4x5':   'pro',
+  'gemini-3.1-flash-image-5x4':   'pro',
+  'gemini-3.1-flash-image-9x16':  'pro',
+  'gemini-3.1-flash-image-16x9':  'pro',
+  'gemini-3.1-flash-image-21x9':  'pro',
+
+  // ── Gemini 3.1 图片生成（2k） ──
+  'gemini-3.1-flash-image-2k':       'pro',
+  'gemini-3.1-flash-image-2k-3x2':   'pro',
+  'gemini-3.1-flash-image-2k-2x3':   'pro',
+  'gemini-3.1-flash-image-2k-3x4':   'pro',
+  'gemini-3.1-flash-image-2k-4x3':   'pro',
+  'gemini-3.1-flash-image-2k-4x5':   'pro',
+  'gemini-3.1-flash-image-2k-5x4':   'pro',
+  'gemini-3.1-flash-image-2k-9x16':  'pro',
+  'gemini-3.1-flash-image-2k-16x9':  'pro',
+  'gemini-3.1-flash-image-2k-21x9':  'pro',
+
+  // ── Gemini 3.1 图片生成（4k） ──
+  'gemini-3.1-flash-image-4k':       'pro',
+  'gemini-3.1-flash-image-4k-3x2':   'pro',
+  'gemini-3.1-flash-image-4k-2x3':   'pro',
+  'gemini-3.1-flash-image-4k-3x4':   'pro',
+  'gemini-3.1-flash-image-4k-4x3':   'pro',
+  'gemini-3.1-flash-image-4k-4x5':   'pro',
+  'gemini-3.1-flash-image-4k-5x4':   'pro',
+  'gemini-3.1-flash-image-4k-9x16':  'pro',
+  'gemini-3.1-flash-image-4k-16x9':  'pro',
+  'gemini-3.1-flash-image-4k-21x9':  'pro',
+
+  // ── Gemini 3 ──
+  'gemini-3-pro':         'pro',
+  'gemini-3-pro-high':    'pro',
+  'gemini-3-pro-preview': 'pro',
+  'gemini-3-flash':         'quick',
+  'gemini-3-flash-preview': 'quick',
+
+  // ── Gemini 2.5 ──
+  'gemini-2.5-pro':              'pro',
+  'gemini-2.5-flash':            'quick',
+  'gemini-2.5-flash-lite':       'quick',
+  'gemini-2.5-flash-thinking':   'think',
+
+  // ── 通用别名 ──
+  'gemini-pro':     'pro',
+  'gemini-flash':   'quick',
   'gemini-thinking': 'think',
 };
 
+// Unix 时间戳（近似发布日期）
+const T_31 = 1745000000; // Gemini 3.1 系列 ≈ 2026-04
+const T_3  = 1735000000; // Gemini 3   系列 ≈ 2025-12
+const T_25 = 1720000000; // Gemini 2.5 系列 ≈ 2024-07
+
 const MODELS = [
-  { id: 'gemini-2.5-pro', created: 1700000000, owned_by: 'google' },
-  { id: 'gemini-2.0-flash', created: 1700000000, owned_by: 'google' },
-  { id: 'gemini-2.5-flash-thinking', created: 1700000000, owned_by: 'google' },
+  // ── Gemini 3.1 文本 ──
+  { id: 'gemini-3.1-pro',         created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-pro-preview', created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash',       created: T_31, owned_by: 'google' },
+
+  // ── Gemini 3.1 图片生成（标准） ──
+  { id: 'gemini-3.1-flash-image',       created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-3x2',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-3x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4x5',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-5x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-9x16',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-16x9',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-21x9',  created: T_31, owned_by: 'google' },
+
+  // ── Gemini 3.1 图片生成（2k） ──
+  { id: 'gemini-3.1-flash-image-2k',       created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-3x2',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-2x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-3x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-4x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-4x5',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-5x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-9x16',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-16x9',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-2k-21x9',  created: T_31, owned_by: 'google' },
+
+  // ── Gemini 3.1 图片生成（4k） ──
+  { id: 'gemini-3.1-flash-image-4k',       created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-3x2',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-2x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-3x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-4x3',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-4x5',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-5x4',   created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-9x16',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-16x9',  created: T_31, owned_by: 'google' },
+  { id: 'gemini-3.1-flash-image-4k-21x9',  created: T_31, owned_by: 'google' },
+
+  // ── Gemini 3 ──
+  { id: 'gemini-3-pro',           created: T_3, owned_by: 'google' },
+  { id: 'gemini-3-pro-high',      created: T_3, owned_by: 'google' },
+  { id: 'gemini-3-pro-preview',   created: T_3, owned_by: 'google' },
+  { id: 'gemini-3-flash',         created: T_3, owned_by: 'google' },
+  { id: 'gemini-3-flash-preview', created: T_3, owned_by: 'google' },
+
+  // ── Gemini 2.5 ──
+  { id: 'gemini-2.5-pro',            created: T_25, owned_by: 'google' },
+  { id: 'gemini-2.5-flash',          created: T_25, owned_by: 'google' },
+  { id: 'gemini-2.5-flash-lite',     created: T_25, owned_by: 'google' },
+  { id: 'gemini-2.5-flash-thinking', created: T_25, owned_by: 'google' },
 ];
+
 
 /**
  * 生成唯一的 completion id

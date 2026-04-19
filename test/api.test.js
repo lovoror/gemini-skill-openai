@@ -313,8 +313,8 @@ describe('handleModels — GET /v1/models', () => {
     handleModels({}, res);
 
     const ids = res.json.data.map(m => m.id);
-    assert.ok(ids.includes('gemini-2.5-pro'));
-    assert.ok(ids.includes('gemini-2.0-flash'));
+    assert.ok(ids.includes('gemini-3.1-pro'));
+    assert.ok(ids.includes('gemini-2.5-flash'));
     assert.ok(ids.includes('gemini-2.5-flash-thinking'));
   });
 });
@@ -539,8 +539,8 @@ describe('API Server 集成测试', () => {
     assert.ok(Array.isArray(res.json.data));
 
     const ids = res.json.data.map(m => m.id);
-    assert.ok(ids.includes('gemini-2.5-pro'));
-    assert.ok(ids.includes('gemini-2.0-flash'));
+    assert.ok(ids.includes('gemini-3.1-pro'));
+    assert.ok(ids.includes('gemini-2.5-flash'));
     assert.ok(ids.includes('gemini-2.5-flash-thinking'));
 
     for (const model of res.json.data) {
