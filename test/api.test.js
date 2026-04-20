@@ -774,3 +774,150 @@ describe('安全性测试', () => {
     await assert.rejects(parseBody(req), /too large/i);
   });
 });
+
+// ════════════════════════════════════════════════════════════
+//  9. stripLabel 一致性测试（流式/非流式场景）
+// ════════════════════════════════════════════════════════════
+
+/**
+ * 与 gemini-ops.js 中 stripLabel 逻辑保持一致的镜像实现，用于单元测试。
+ * 如果 gemini-ops.js 的实现发生变化，这里也需同步更新。
+ */
+function stripLabel(t) {
+  let s = t;
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/^显示思路\s*\n*/, '')
+         .replace(/^Gemini\s*说\s*\n*/, '')
+         .replace(/^[^\n]{0,30}说\s*\n+/, '')
+         .replace(/^JSON\s*\n*/i, '')
+         .replace(/^\s*\n/, '');
+  } while (s !== prev);
+  s = s.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+  return s.trim();
+}
+
+describe('stripLabel 一致性测试', () => {
+
+  it('无前缀 — 原样返回', () => {
+    assert.equal(stripLabel('[{"sub_index":1}]'), '[{"sub_index":1}]');
+  });
+
+  it('"Gemini 说\\n" 有换行 — 正确剥离', () => {
+    assert.equal(stripLabel('Gemini 说\n[{"sub_index":1}]'), '[{"sub_index":1}]');
+  });
+
+  it('"Gemini 说" 无换行（流式中间态） — 正确剥离', () => {
+    // 这是导致 bug 的核心场景：流式早期 DOM 中只有 "Gemini 说" 尚无换行
+    assert.equal(stripLabel('Gemini 说'), '');
+    assert.equal(stripLabel('Gemini 说[{"sub_index":1}]'), '[{"sub_index":1}]');
+  });
+
+  it('"Gemini说" 无空格变体 — 正确剥离', () => {
+    assert.equal(stripLabel('Gemini说\n内容'), '内容');
+    assert.equal(stripLabel('Gemini说内容'), '内容');
+  });
+
+  it('"显示思路" 有换行 — 正确剥离', () => {
+    assert.equal(stripLabel('显示思路\n实际内容'), '实际内容');
+  });
+
+  it('"显示思路" 无换行（流式中间态） — 正确剥离', () => {
+    assert.equal(stripLabel('显示思路'), '');
+    assert.equal(stripLabel('显示思路实际内容'), '实际内容');
+  });
+
+  it('"JSON" 标签有换行 — 正确剥离', () => {
+    assert.equal(stripLabel('JSON\n[1,2,3]'), '[1,2,3]');
+    assert.equal(stripLabel('json\n{"a":1}'), '{"a":1}');
+  });
+
+  it('"JSON" 标签无换行（流式中间态） — 正确剥离', () => {
+    assert.equal(stripLabel('JSON'), '');
+    assert.equal(stripLabel('JSON[1,2]'), '[1,2]');
+  });
+
+  it('多层前缀叠加 — 全部剥离', () => {
+    assert.equal(stripLabel('显示思路\nGemini 说\nJSON\n{"a":1}'), '{"a":1}');
+  });
+
+  it('markdown 代码围栏 — 正确剥离', () => {
+    assert.equal(stripLabel('```json\n[1,2]\n```'), '[1,2]');
+    assert.equal(stripLabel('Gemini 说\n```json\n[1,2]\n```'), '[1,2]');
+  });
+
+  it('前缀 + 空行 + 内容 — 正确剥离', () => {
+    assert.equal(stripLabel('Gemini 说\n\n[1,2,3]'), '[1,2,3]');
+  });
+
+  it('流式一致性 — 有无换行结果一致', () => {
+    // 模拟流式不同阶段拿到的文本，stripLabel 返回值应单调递增（前缀一致）
+    const withNewline = stripLabel('Gemini 说\n[{"sub_index":1}]');
+    const withoutNewline = stripLabel('Gemini 说[{"sub_index":1}]');
+    assert.equal(withNewline, withoutNewline,
+      'stripLabel 在有/无换行时对相同内容应返回相同结果');
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  10. 流式 delta 计算健壮性测试
+// ════════════════════════════════════════════════════════════
+
+describe('流式 delta 计算健壮性', () => {
+
+  /**
+   * 模拟 handlers.js 中 streamChatCompletion 的 delta 计算逻辑（修复后版本）
+   * 输入：按时间顺序的 currentText 序列
+   * 输出：发送给客户端的 delta 序列
+   */
+  function simulateDeltas(textSequence) {
+    let prevText = '';
+    const deltas = [];
+    for (const currentText of textSequence) {
+      if (currentText.length > prevText.length) {
+        if (currentText.startsWith(prevText)) {
+          deltas.push(currentText.slice(prevText.length));
+        }
+        // else: 跳过，防止错位
+        prevText = currentText;
+      }
+    }
+    return deltas;
+  }
+
+  it('正常递增 — delta 拼接等于最终文本', () => {
+    const seq = ['Hello', 'Hello world', 'Hello world!'];
+    const deltas = simulateDeltas(seq);
+    assert.equal(deltas.join(''), 'Hello world!');
+  });
+
+  it('前缀不匹配（stripLabel 行为变化） — 跳过有问题的 delta', () => {
+    // 模拟 bug 场景：第一次 stripLabel 没去掉前缀，第二次去掉了
+    // 流式文本逐字追加，所以后续文本是追加式增长
+    const seq = ['Gemini 说', '[{"sub_index":1},', '[{"sub_index":1},{"sub_index":2}]'];
+    const deltas = simulateDeltas(seq);
+    // 第 1 轮：prevText="" → "Gemini 说"，正常发 delta
+    assert.equal(deltas[0], 'Gemini 说');
+    // 第 2 轮："[{..." 不以 "Gemini 说" 开头 → 跳过 delta，但 prevText 更新
+    // 第 3 轮："[{...,{...}]" 以 "[{...," 开头 → 正常发增量
+    assert.equal(deltas.length, 2);
+    assert.equal(deltas[1], '{"sub_index":2}]');
+    // 关键：不会出现 "说_index" 这种损坏内容
+    assert.ok(!deltas.join('').includes('说_index'), '不应出现损坏的 JSON 片段');
+  });
+
+  it('空序列 — 无 delta', () => {
+    assert.deepEqual(simulateDeltas([]), []);
+  });
+
+  it('单次完整响应 — 一个 delta', () => {
+    const deltas = simulateDeltas(['完整响应内容']);
+    assert.deepEqual(deltas, ['完整响应内容']);
+  });
+
+  it('文本长度未增长 — 不发送 delta', () => {
+    const deltas = simulateDeltas(['abc', 'abc', 'abc']);
+    assert.deepEqual(deltas, ['abc']);
+  });
+});

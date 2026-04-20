@@ -447,6 +447,14 @@ export function createOps(page) {
     },
 
     /**
+     * 获取当前 DOM 中响应气泡的数量（用于判断新响应是否出现）
+     * @returns {Promise<number>}
+     */
+    async countResponses() {
+      return op.query(() => document.querySelectorAll('div.response-content').length);
+    },
+
+    /**
      * 获取当前会话中所有 Gemini 的文字回复
      *
      * 选择器：div.response-content
@@ -455,19 +463,39 @@ export function createOps(page) {
      * @returns {Promise<{ok: boolean, responses: Array<{index: number, text: string}>, total: number, error?: string}>}
      */
     async getAllTextResponses() {
-      return op.query(() => {
+      const stripLabel = t => {
+        // 循环剥离 Gemini UI 注入的多行前缀标签（如"显示思路"、"Gemini 说"、"JSON"等）
+        // 注意：流式场景下换行符可能尚未到达，因此已知标签使用 \n* 而非 \n+
+        let s = t;
+        let prev;
+        do {
+          prev = s;
+          s = s.replace(/^显示思路\s*\n*/, '')       // "显示思路" 行（流式兼容）
+               .replace(/^Gemini\s*说\s*\n*/, '')    // "Gemini 说" 专用（流式兼容，无需换行）
+               .replace(/^[^\n]{0,30}说\s*\n+/, '')  // 其它 "X 说" 短前缀行（需换行保护，避免误剥）
+               .replace(/^JSON\s*\n*/i, '')           // 单独的 JSON 标签行（流式兼容）
+               .replace(/^\s*\n/, '');                // 空行
+        } while (s !== prev);
+        // 去除 markdown 代码围栏
+        s = s.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+        return s.trim();
+      };
+
+      const raw = await op.query(() => {
         const divs = [...document.querySelectorAll('div.response-content')];
         if (!divs.length) {
           return { ok: false, responses: [], total: 0, error: 'no_responses' };
         }
-
         const responses = divs.map((div, i) => ({
           index: i,
           text: (div.innerText || '').trim(),
         }));
-
         return { ok: true, responses, total: responses.length };
       });
+
+      if (!raw.ok) return raw;
+      raw.responses = raw.responses.map(r => ({ ...r, text: stripLabel(r.text) }));
+      return raw;
     },
 
     /**
@@ -478,15 +506,35 @@ export function createOps(page) {
      * @returns {Promise<{ok: boolean, text?: string, index?: number, error?: string}>}
      */
     async getLatestTextResponse() {
-      return op.query(() => {
+      const stripLabel = t => {
+        // 循环剥离 Gemini UI 注入的多行前缀标签（如"显示思路"、"Gemini 说"、"JSON"等）
+        // 注意：流式场景下换行符可能尚未到达，因此已知标签使用 \n* 而非 \n+
+        let s = t;
+        let prev;
+        do {
+          prev = s;
+          s = s.replace(/^显示思路\s*\n*/, '')       // "显示思路" 行（流式兼容）
+               .replace(/^Gemini\s*说\s*\n*/, '')    // "Gemini 说" 专用（流式兼容，无需换行）
+               .replace(/^[^\n]{0,30}说\s*\n+/, '')  // 其它 "X 说" 短前缀行（需换行保护，避免误剥）
+               .replace(/^JSON\s*\n*/i, '')           // 单独的 JSON 标签行（流式兼容）
+               .replace(/^\s*\n/, '');                // 空行
+        } while (s !== prev);
+        // 去除 markdown 代码围栏
+        s = s.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+        return s.trim();
+      };
+
+      const raw = await op.query(() => {
         const divs = [...document.querySelectorAll('div.response-content')];
         if (!divs.length) {
           return { ok: false, error: 'no_responses' };
         }
-
         const last = divs[divs.length - 1];
         return { ok: true, text: (last.innerText || '').trim(), index: divs.length - 1 };
       });
+
+      if (!raw.ok) return raw;
+      return { ...raw, text: stripLabel(raw.text) };
     },
 
     /**
@@ -1468,8 +1516,20 @@ export function createOps(page) {
     async sendAndWait(prompt, opts = {}) {
       const { timeout = 120_000, interval = 1_000, onPoll } = opts;
 
+      // 0. 记录发送前已有的响应数量，防止误取历史回复
+      const beforeCount = await op.query(() => {
+        return document.querySelectorAll('div.response-content').length;
+      });
+      console.log(`[ops][sendAndWait] beforeCount=${beforeCount}, prompt="${prompt.slice(0, 60).replace(/\n/g,' ')}..."`);
+
       // 1. 填写
       const fillResult = await this.fillPrompt(prompt);
+      // 填写后立即读取输入框实际内容，确认 fill 正确
+      const actualInput = await op.query(() => {
+        const el = document.querySelector('div.ql-editor[contenteditable="true"][role="textbox"]');
+        return el ? (el.innerText || el.textContent || '').slice(0, 120) : 'NOT_FOUND';
+      });
+      console.log(`[ops][sendAndWait] fillResult=${JSON.stringify(fillResult)}, actualInput="${actualInput.replace(/\n/g,' ')}"`);
       if (!fillResult.ok) {
         return { ok: false, error: 'fill_failed', detail: fillResult, elapsed: 0 };
       }
@@ -1483,9 +1543,10 @@ export function createOps(page) {
         return { ok: false, error: 'send_click_failed', detail: clickResult, elapsed: 0 };
       }
 
-      // 3. 轮询等待（回到麦克风态 = Gemini 回答完毕）
+      // 3. 轮询等待：先等到 stop（生成开始），再等到 mic（生成完毕）
       const start = Date.now();
       let lastStatus = null;
+      let generationStarted = false;  // 是否已进入 stop 状态
 
       while (Date.now() - start < timeout) {
         await sleep(interval);
@@ -1494,16 +1555,30 @@ export function createOps(page) {
         lastStatus = poll;
         onPoll?.(poll);
 
+        if (poll.status === 'stop') {
+          generationStarted = true;
+        }
+
         if (poll.status === 'mic') {
-          // 回复完成，自动提取最新文字回复
+          // 必须先经过 stop 状态，才说明是本次请求的回复结束
+          if (!generationStarted) {
+            console.log('[ops][sendAndWait] mic before stop — still waiting for generation to start');
+            continue;
+          }
+          // 确认出现了新响应（index > beforeCount - 1）
           const textResp = await this.getLatestTextResponse();
-          return {
-            ok: true,
-            elapsed: Date.now() - start,
-            finalStatus: poll,
-            text: textResp.ok ? textResp.text : null,
-            textIndex: textResp.ok ? textResp.index : null,
-          };
+          console.log(`[ops][sendAndWait] mic hit: textResp.index=${textResp.index}, beforeCount=${beforeCount}, text="${(textResp.text||'').slice(0,80).replace(/\n/g,' ')}"`);
+          if (textResp.ok && textResp.index >= beforeCount) {
+            return {
+              ok: true,
+              elapsed: Date.now() - start,
+              finalStatus: poll,
+              text: textResp.text,
+              textIndex: textResp.index,
+            };
+          }
+          // 新响应还未出现，继续等待
+          continue;
         }
         if (poll.status === 'unknown') {
           console.warn('[ops] unknown status, may need screenshot to debug');

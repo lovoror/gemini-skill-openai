@@ -194,43 +194,24 @@ export function createOperator(page) {
         return { ok: false, error: 'element_not_found', triedSelectors: sels };
       }
 
-      // 先点击聚焦目标元素
+      // 1. 真实鼠标点击聚焦（生成 isTrusted=true 事件，Quill 编辑器需要此激活）
       const { x, y } = humanize(loc.x, loc.y, 2);
       await page.mouse.click(x, y);
       await randomDelay(100, 200);
 
-      // 在页面上下文中执行文本填充（一次性，不留痕迹）
-      const result = await page.evaluate((selsInner, textInner) => {
-        // 重新查找元素（因为 click 后 DOM 可能有变化）
-        let el = null;
-        for (const sel of selsInner) {
-          try {
-            const all = [...document.querySelectorAll(sel)];
-            el = all.find(n => {
-              const r = n.getBoundingClientRect();
-              return r.width > 0 && r.height > 0;
-            }) || null;
-          } catch { /* skip */ }
-          if (el) break;
-        }
+      // 2. Ctrl+A 全选已有内容
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await randomDelay(50, 100);
 
-        if (!el) return { ok: false, error: 'element_lost_after_click' };
+      // 3. 通过 CDP Input.insertText 输入文本
+      //    - 生成 isTrusted=true 的 input 事件，Quill 能正确感知
+      //    - 文本直接走 CDP 协议，不经过 page.evaluate 序列化，CJK 字符无损
+      const client = page._client();
+      await client.send('Input.insertText', { text });
 
-        el.focus();
-
-        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-          // 原生表单元素
-          el.value = textInner;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        } else {
-          // contenteditable 元素（如 Gemini 的富文本输入框）
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, textInner);
-        }
-        return { ok: true };
-      }, sels, text);
-
-      return { ...result, selector: loc.selector };
+      return { ok: true, selector: loc.selector };
     },
 
     /**

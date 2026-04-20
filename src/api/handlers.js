@@ -7,7 +7,7 @@
  *   POST /v1/images/generations    — 图片生成
  *   GET  /files/:filename          — 静态文件服务（图片下载）
  */
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 import { createGeminiSession, disconnect } from '../index.js';
 import config from '../config.js';
@@ -288,6 +288,11 @@ async function nonStreamChatCompletion(res, prompt, images, modelName) {
   const { ops } = await createGeminiSession();
 
   try {
+    // 每次请求进入临时对话，保持无状态（与 OpenAI API 语义一致）
+    await ops.click('newChatBtn');
+    await sleep(250);
+    await ops.clickTempChat();
+
     await switchModelIfNeeded(ops, modelName);
 
     // 上传参考图
@@ -338,6 +343,11 @@ async function streamChatCompletion(res, prompt, images, modelName) {
   const { ops } = await createGeminiSession();
 
   try {
+    // 每次请求进入临时对话，保持无状态（与 OpenAI API 语义一致）
+    await ops.click('newChatBtn');
+    await sleep(250);
+    await ops.clickTempChat();
+
     await switchModelIfNeeded(ops, modelName);
 
     // 上传参考图
@@ -352,6 +362,9 @@ async function streamChatCompletion(res, prompt, images, modelName) {
 
     const id = makeId();
     const created = Math.floor(Date.now() / 1000);
+
+    // 记录发送前已有的响应数量，防止误取历史回复
+    const beforeCount = await ops.countResponses();
 
     // 发送 role chunk
     writeSSEChunk(res, {
@@ -405,31 +418,36 @@ async function streamChatCompletion(res, prompt, images, modelName) {
     while (!aborted && Date.now() - start < timeout) {
       const status = await ops.getStatus();
 
-      // 提取当前文本
+      // 提取当前文本（仅使用新生成的响应）
       const textResp = await ops.getLatestTextResponse();
-      if (textResp.ok && textResp.text) {
+      if (textResp.ok && textResp.text && textResp.index >= beforeCount) {
         const currentText = textResp.text;
         if (currentText.length > prevText.length) {
-          const delta = currentText.slice(prevText.length);
+          if (currentText.startsWith(prevText)) {
+            const delta = currentText.slice(prevText.length);
+            writeSSEChunk(res, {
+              id, object: 'chat.completion.chunk', created, model: modelName,
+              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+            });
+          }
+          // else: stripLabel 行为在流式中途变化，跳过本轮 delta 防止内容错位
           prevText = currentText;
-
-          writeSSEChunk(res, {
-            id, object: 'chat.completion.chunk', created, model: modelName,
-            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-          });
         }
       }
 
       // 检查是否完成
       if (status.status === 'mic') {
-        // 最后再拉一次确保拿到完整文本
+        // 最后再拉一次确保拿到完整文本（仅使用新生成的响应）
         const finalResp = await ops.getLatestTextResponse();
-        if (finalResp.ok && finalResp.text && finalResp.text.length > prevText.length) {
-          const delta = finalResp.text.slice(prevText.length);
-          writeSSEChunk(res, {
-            id, object: 'chat.completion.chunk', created, model: modelName,
-            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-          });
+        if (finalResp.ok && finalResp.text && finalResp.index >= beforeCount && finalResp.text.length > prevText.length) {
+          if (finalResp.text.startsWith(prevText)) {
+            const delta = finalResp.text.slice(prevText.length);
+            writeSSEChunk(res, {
+              id, object: 'chat.completion.chunk', created, model: modelName,
+              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+            });
+          }
+          // else: 前缀不匹配，跳过避免错位
         }
         finished = true;
         break;
@@ -503,10 +521,22 @@ async function generateImageHandler(prompt, responseFormat, req, modelName) {
   const { ops } = await createGeminiSession();
 
   try {
+    // 每次生图都进入临时对话（与 MCP gemini_temp_chat 相同模式）：
+    //   1. newChatBtn → 空白页
+    //   2. 250ms 等页面稳定
+    //   3. clickTempChat → 隔离 session，不记录历史，不受旧对话影响
+    await ops.click('newChatBtn');
+    await sleep(250);
+    await ops.clickTempChat();
+
     await ops.ensureModelPro();
 
-    const fullSize = responseFormat === 'url';
-    const result = await ops.generateImage(prompt, { fullSize, timeout: 180_000 });
+    // 显式要求生成图片，防止 Gemini 误以为是文字对话而返回文字描述
+    const imagePrompt = `Generate an image of: ${prompt}`;
+
+    // 统一使用 base64 提取路径（fullSize CDP 下载流程依赖 Gemini UI 悬浮按钮，不稳定）
+    // response_format=url 时：提取 base64 → 写文件 → 返回 /files/ URL
+    const result = await ops.generateImage(imagePrompt, { fullSize: false, timeout: 180_000 });
 
     if (!result.ok) {
       throw new Error(`Image generation failed: ${result.error}`);
@@ -515,9 +545,17 @@ async function generateImageHandler(prompt, responseFormat, req, modelName) {
     const created = Math.floor(Date.now() / 1000);
     const data = [];
 
-    if (responseFormat === 'url' && result.filePath) {
-      // 返回可访问的 HTTP URL
-      const filename = basename(result.filePath);
+    if (responseFormat === 'url' && result.dataUrl) {
+      // 将 base64 写入文件，返回可访问的 HTTP URL
+      const outputDir = resolve(config.outputDir);
+      mkdirSync(outputDir, { recursive: true });
+      const mimeMatch = result.dataUrl.match(/^data:([^;]+);base64,/);
+      const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const ext = mime.split('/')[1] || 'jpg';
+      const filename = `gemini_${Date.now()}.${ext}`;
+      const filePath = join(outputDir, filename);
+      const b64 = result.dataUrl.replace(/^data:[^;]+;base64,/, '');
+      writeFileSync(filePath, Buffer.from(b64, 'base64'));
       const host = req.headers.host || `127.0.0.1:${config.apiPort}`;
       const protocol = req.headers['x-forwarded-proto'] || 'http';
       const url = `${protocol}://${host}/files/${encodeURIComponent(filename)}`;
@@ -527,7 +565,7 @@ async function generateImageHandler(prompt, responseFormat, req, modelName) {
       const b64 = result.dataUrl.replace(/^data:[^;]+;base64,/, '');
       data.push({ b64_json: b64, revised_prompt: prompt });
     } else if (result.filePath) {
-      // fullSize=false 但结果是文件路径（fallback）
+      // fallback：文件路径（已存在于磁盘）
       const filename = basename(result.filePath);
       const host = req.headers.host || `127.0.0.1:${config.apiPort}`;
       const protocol = req.headers['x-forwarded-proto'] || 'http';
