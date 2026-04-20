@@ -241,7 +241,7 @@ export async function handleChatCompletions(req, res) {
     return;
   }
 
-  const { messages, model, stream } = body;
+  const { messages, model, stream, response_format } = body;
 
   // model 校验优先（可以不传，不传时使用默认值）
   if (model && IMAGE_MODEL_SET.has(model)) {
@@ -261,11 +261,17 @@ export async function handleChatCompletions(req, res) {
     return;
   }
 
-  const { prompt, userContent, images } = extractPrompt(messages);
+  const { prompt: rawPrompt, userContent, images } = extractPrompt(messages);
   if (!userContent.trim()) {
     sendError(res, 400, 'No user message content found');
     return;
   }
+
+  // response_format 支持：当 type 为 json_object 时，追加 JSON 强制指令
+  const jsonMode = response_format?.type === 'json_object';
+  const prompt = jsonMode
+    ? rawPrompt + '\n\n[IMPORTANT: You must respond with valid JSON only. No explanations, no markdown code fences, no extra text before or after the JSON.]'
+    : rawPrompt;
 
   try {
     await enqueue(() => stream

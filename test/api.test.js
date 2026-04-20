@@ -785,10 +785,15 @@ describe('安全性测试', () => {
  */
 function stripLabel(t) {
   let s = t;
+  // Phase 1: 以 "Gemini 说" 为锚点
+  const anchor = s.match(/^[\s\S]*?Gemini\s*说\s*\n*/);
+  if (anchor) s = s.slice(anchor[0].length);
+  // Phase 2: 循环剥离残余
   let prev;
   do {
     prev = s;
     s = s.replace(/^显示思路\s*\n*/, '')
+         .replace(/^立即回答\s*\n*/, '')
          .replace(/^Gemini\s*说\s*\n*/, '')
          .replace(/^[^\n]{0,30}说\s*\n+/, '')
          .replace(/^JSON\s*\n*/i, '')
@@ -857,6 +862,29 @@ describe('stripLabel 一致性测试', () => {
     const withoutNewline = stripLabel('Gemini 说[{"sub_index":1}]');
     assert.equal(withNewline, withoutNewline,
       'stripLabel 在有/无换行时对相同内容应返回相同结果');
+  });
+
+  it('思考模型 — 英文思考标签 + Gemini 说 + 内容', () => {
+    const text = 'Defining the Objective\n立即回答\nGemini 说\n[{"sub_index":2}]';
+    assert.equal(stripLabel(text), '[{"sub_index":2}]');
+  });
+
+  it('思考模型 — 多行英文标签全部剥离', () => {
+    const text = 'Analyzing the Input\nProcessing data\nGemini 说\n{"result":true}';
+    assert.equal(stripLabel(text), '{"result":true}');
+  });
+
+  it('思考模型 — 仅有标签无内容（流式早期）', () => {
+    // 有锚点时：全部剥离
+    assert.equal(stripLabel('Defining the Objective\n立即回答\nGemini 说'), '');
+    // 无锚点且首行是未知标签时：无法剥离（handlers.js startsWith 防御兜底）
+    assert.equal(stripLabel('Defining the Objective\n立即回答'),
+      'Defining the Objective\n立即回答');
+  });
+
+  it('"立即回答" 单独出现 — 正确剥离', () => {
+    assert.equal(stripLabel('立即回答\n[1,2,3]'), '[1,2,3]');
+    assert.equal(stripLabel('立即回答'), '');
   });
 });
 

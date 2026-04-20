@@ -464,19 +464,23 @@ export function createOps(page) {
      */
     async getAllTextResponses() {
       const stripLabel = t => {
-        // 循环剥离 Gemini UI 注入的多行前缀标签（如"显示思路"、"Gemini 说"、"JSON"等）
-        // 注意：流式场景下换行符可能尚未到达，因此已知标签使用 \n* 而非 \n+
         let s = t;
+        // Phase 1: 以 "Gemini 说" 为锚点，切掉它及其前面所有思考阶段标签
+        // 覆盖 gemini-3.x-pro 等思考模型注入的任意标签（如 "Defining the Objective", "立即回答" 等）
+        const anchor = s.match(/^[\s\S]*?Gemini\s*说\s*\n*/);
+        if (anchor) s = s.slice(anchor[0].length);
+        // Phase 2: 循环剥离残余已知标签
         let prev;
         do {
           prev = s;
-          s = s.replace(/^显示思路\s*\n*/, '')       // "显示思路" 行（流式兼容）
-               .replace(/^Gemini\s*说\s*\n*/, '')    // "Gemini 说" 专用（流式兼容，无需换行）
-               .replace(/^[^\n]{0,30}说\s*\n+/, '')  // 其它 "X 说" 短前缀行（需换行保护，避免误剥）
-               .replace(/^JSON\s*\n*/i, '')           // 单独的 JSON 标签行（流式兼容）
+          s = s.replace(/^显示思路\s*\n*/, '')       // "显示思路"
+               .replace(/^立即回答\s*\n*/, '')       // 思考模型的 "立即回答"
+               .replace(/^Gemini\s*说\s*\n*/, '')    // 残余 "Gemini 说"
+               .replace(/^[^\n]{0,30}说\s*\n+/, '')  // 其它 "X 说" 短前缀行
+               .replace(/^JSON\s*\n*/i, '')           // 单独的 JSON 标签行
                .replace(/^\s*\n/, '');                // 空行
         } while (s !== prev);
-        // 去除 markdown 代码围栏
+        // Phase 3: 去除 markdown 代码围栏
         s = s.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '');
         return s.trim();
       };
@@ -507,19 +511,22 @@ export function createOps(page) {
      */
     async getLatestTextResponse() {
       const stripLabel = t => {
-        // 循环剥离 Gemini UI 注入的多行前缀标签（如"显示思路"、"Gemini 说"、"JSON"等）
-        // 注意：流式场景下换行符可能尚未到达，因此已知标签使用 \n* 而非 \n+
         let s = t;
+        // Phase 1: 以 "Gemini 说" 为锚点，切掉它及其前面所有思考阶段标签
+        const anchor = s.match(/^[\s\S]*?Gemini\s*说\s*\n*/);
+        if (anchor) s = s.slice(anchor[0].length);
+        // Phase 2: 循环剥离残余已知标签
         let prev;
         do {
           prev = s;
-          s = s.replace(/^显示思路\s*\n*/, '')       // "显示思路" 行（流式兼容）
-               .replace(/^Gemini\s*说\s*\n*/, '')    // "Gemini 说" 专用（流式兼容，无需换行）
-               .replace(/^[^\n]{0,30}说\s*\n+/, '')  // 其它 "X 说" 短前缀行（需换行保护，避免误剥）
-               .replace(/^JSON\s*\n*/i, '')           // 单独的 JSON 标签行（流式兼容）
-               .replace(/^\s*\n/, '');                // 空行
+          s = s.replace(/^显示思路\s*\n*/, '')
+               .replace(/^立即回答\s*\n*/, '')
+               .replace(/^Gemini\s*说\s*\n*/, '')
+               .replace(/^[^\n]{0,30}说\s*\n+/, '')
+               .replace(/^JSON\s*\n*/i, '')
+               .replace(/^\s*\n/, '');
         } while (s !== prev);
-        // 去除 markdown 代码围栏
+        // Phase 3: 去除 markdown 代码围栏
         s = s.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '');
         return s.trim();
       };
