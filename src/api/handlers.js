@@ -14,6 +14,7 @@ import config from '../config.js';
 import { sleep } from '../util.js';
 import { enqueue } from './queue.js';
 import { writeSSEHeaders, writeSSEChunk, writeSSEDone } from './stream.js';
+import { apiLogger, sanitizeForLog } from './logger.js';
 
 // ── 模型目录 ──
 // browser 内部只有 pro / quick / think 三档；图片生成仍复用 MCP 的 ensureModelPro() 流程。
@@ -138,7 +139,9 @@ export function parseBody(req) {
     req.on('end', () => {
       try {
         const raw = Buffer.concat(chunks).toString('utf-8');
-        resolve(raw ? JSON.parse(raw) : {});
+        const parsed = raw ? JSON.parse(raw) : {};
+        req.apiRequestBody = sanitizeForLog(parsed);
+        resolve(parsed);
       } catch {
         reject(new Error('Invalid JSON'));
       }
@@ -237,6 +240,10 @@ export async function handleChatCompletions(req, res) {
   try {
     body = await parseBody(req);
   } catch (err) {
+    apiLogger.log('chat_completion_parse_error', {
+      reqId: req.apiReqId,
+      message: err?.message,
+    });
     sendError(res, 400, err.message);
     return;
   }
@@ -255,6 +262,13 @@ export async function handleChatCompletions(req, res) {
   }
 
   const requestedModel = model || 'gemini-2.5-pro';
+
+  apiLogger.log('chat_completion_request', {
+    reqId: req.apiReqId,
+    model: requestedModel,
+    stream: Boolean(stream),
+    messageCount: Array.isArray(messages) ? messages.length : 0,
+  });
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     sendError(res, 400, 'messages is required and must be a non-empty array');
@@ -279,6 +293,14 @@ export async function handleChatCompletions(req, res) {
       : nonStreamChatCompletion(res, prompt, images, requestedModel)
     );
   } catch (err) {
+    apiLogger.log('chat_completion_error', {
+      reqId: req.apiReqId,
+      model: requestedModel,
+      stream: Boolean(stream),
+      message: err?.message,
+      stack: err?.stack,
+      status: err?.status,
+    });
     if (err.status === 429) {
       sendError(res, 429, 'Too many requests, please try again later', 'rate_limit_error');
     } else if (!res.headersSent) {
@@ -486,11 +508,22 @@ export async function handleImageGenerations(req, res) {
   try {
     body = await parseBody(req);
   } catch (err) {
+    apiLogger.log('image_generation_parse_error', {
+      reqId: req.apiReqId,
+      message: err?.message,
+    });
     sendError(res, 400, err.message);
     return;
   }
 
   const { prompt, response_format = 'b64_json', n = 1, model = 'gemini-3.1-flash-image' } = body;
+
+  apiLogger.log('image_generation_request', {
+    reqId: req.apiReqId,
+    model,
+    responseFormat: response_format,
+    n,
+  });
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     sendError(res, 400, 'prompt is required and must be a non-empty string');
@@ -512,6 +545,14 @@ export async function handleImageGenerations(req, res) {
     const result = await enqueue(() => generateImageHandler(prompt, response_format, req, model));
     sendJSON(res, 200, result);
   } catch (err) {
+    apiLogger.log('image_generation_error', {
+      reqId: req.apiReqId,
+      model,
+      responseFormat: response_format,
+      message: err?.message,
+      stack: err?.stack,
+      status: err?.status,
+    });
     if (err.status === 429) {
       sendError(res, 429, 'Too many requests, please try again later', 'rate_limit_error');
     } else if (!res.headersSent) {

@@ -142,6 +142,18 @@ const config = {
 
   /** API 认证密钥，为空则跳过认证 */
   apiKey: envStr('API_KEY', ''),
+
+  /** 是否启用 OpenAI 兼容 API 文件日志 */
+  apiLogEnabled: envBool('API_LOG_ENABLED', true),
+
+  /** API 日志目录 */
+  apiLogDir: envStr('API_LOG_DIR', join(projectRoot, 'logs', 'api')),
+
+  /** 日志内字符串字段最大长度（超出会截断） */
+  apiLogMaxString: envInt('API_LOG_MAX_STRING', 2000),
+
+  /** API Server 退出时是否同时关闭 Daemon（默认开启；多 API Server 共享同一 Daemon 时设为 false） */
+  daemonStopOnExit: envBool('DAEMON_STOP_ON_API_EXIT', true),
 };
 
 export default config;

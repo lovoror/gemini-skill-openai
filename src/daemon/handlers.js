@@ -124,6 +124,27 @@ export function handleHealth(_req, res) {
   });
 }
 
+/**
+ * POST /shutdown
+ *
+ * 优雅退出 Daemon：先销毁浏览器，再关闭 HTTP 服务，最后退出进程。
+ * 主要由 API Server 在 SIGINT/SIGTERM 时调用，实现“Ctrl+C 一起停”的体验。
+ */
+export async function handleShutdown(_req, res, server) {
+  sendJSON(res, 200, { ok: true, message: 'daemon_shutting_down' });
+
+  // 延迟 100ms 后再退出，确保响应已发出
+  setTimeout(async () => {
+    console.log('[daemon] 🛑 收到 shutdown 请求，开始优雅退出...');
+    server.close();
+    try {
+      await terminateBrowser();
+    } catch { /* 已经离线时忽略 */ }
+    console.log('[daemon] ✅ Daemon 已退出');
+    process.exit(0);
+  }, 100);
+}
+
 // ── 工具函数 ──
 
 function sendJSON(res, statusCode, data) {

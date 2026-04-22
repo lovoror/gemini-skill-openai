@@ -14,7 +14,7 @@
  *   GET  /health           — Daemon 健康检查
  */
 import { createServer } from 'node:http';
-import { handleAcquire, handleStatus, handleRelease, handleHealth } from './handlers.js';
+import { handleAcquire, handleStatus, handleRelease, handleHealth, handleShutdown } from './handlers.js';
 import { setTTL, cancelHeartbeat, setServer } from './lifecycle.js';
 import { terminateBrowser, onBrowserExit } from './engine.js';
 import config from '../config.js';
@@ -31,6 +31,7 @@ const routes = {
   'GET /browser/status': handleStatus,
   'POST /browser/release': handleRelease,
   'GET /health': handleHealth,
+  'POST /shutdown': (req, res) => handleShutdown(req, res, server),
 };
 
 // ── HTTP 服务器 ──
@@ -69,6 +70,7 @@ server.listen(PORT, () => {
   console.log(`[daemon]    GET  /browser/status   — 查询浏览器状态`);
   console.log(`[daemon]    POST /browser/release  — 销毁浏览器`);
   console.log(`[daemon]    GET  /health           — 健康检查`);
+  console.log(`[daemon]    POST /shutdown         — 优雅退出 Daemon`);
 });
 
 // ── 优雅退出：系统信号拦截 ──

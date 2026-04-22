@@ -96,6 +96,26 @@ export function createOperator(page) {
     return sleep(ms);
   }
 
+  /**
+   * 分块发送 Input.insertText，防止超长文本触发 CDP protocolTimeout
+   * 每块 500 字符，块间稍作间隔给浏览器缓冲
+   * @param {import('puppeteer-core').CDPSession} client
+   * @param {string} text
+   */
+  async function insertTextChunked(client, text) {
+    const CHUNK = 500;
+    if (text.length <= CHUNK) {
+      await client.send('Input.insertText', { text });
+      return;
+    }
+    for (let i = 0; i < text.length; i += CHUNK) {
+      await client.send('Input.insertText', { text: text.slice(i, i + CHUNK) });
+      if (i + CHUNK < text.length) {
+        await sleep(30); // 给浏览器一点缓冲
+      }
+    }
+  }
+
   // ─── 公开 API ───
 
   return {
@@ -170,8 +190,9 @@ export function createOperator(page) {
       } else {
         // 粘贴模式：通过 CDP Input.insertText 一次性输入整段文本
         // 等价于用户从剪贴板粘贴，但不依赖 clipboard API 权限
+        // 分块发送以避免长文本触发 CDP protocolTimeout
         const client = page._client();
-        await client.send('Input.insertText', { text });
+        await insertTextChunked(client, text);
       }
 
       return { ok: true, length: text.length, mode };
@@ -208,8 +229,9 @@ export function createOperator(page) {
       // 3. 通过 CDP Input.insertText 输入文本
       //    - 生成 isTrusted=true 的 input 事件，Quill 能正确感知
       //    - 文本直接走 CDP 协议，不经过 page.evaluate 序列化，CJK 字符无损
+      //    - 分块发送以避免长文本触发 CDP protocolTimeout
       const client = page._client();
-      await client.send('Input.insertText', { text });
+      await insertTextChunked(client, text);
 
       return { ok: true, selector: loc.selector };
     },
